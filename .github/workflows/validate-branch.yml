@@ -1,0 +1,29 @@
+name: Validate Branch Name
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited]
+    branches:
+      - main
+
+jobs:
+  validate:
+    name: Check branch prefix
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate branch name against conventional commit prefixes
+        run: |
+          BRANCH="${{ github.head_ref }}"
+          echo "Branch name: $BRANCH"
+
+          ALLOWED_PATTERN='^(feat|fix|chore|bump)(/|-|_).+'
+
+          if [[ "$BRANCH" =~ $ALLOWED_PATTERN ]]; then
+            echo "Branch '$BRANCH' is valid."
+          else
+            echo "::error::Branch name '$BRANCH' does not follow the required naming convention."
+            echo "::error::Branch names must start with one of: feat/, fix/, chore/, bump/"
+            echo "::error::Examples: feat/my-feature  fix/login-bug  chore/update-deps  bump/v2"
+            exit 1
+          fi
