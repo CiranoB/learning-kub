@@ -1,0 +1,104 @@
+name: Release on Merge
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+
+jobs:
+  release:
+    name: Determine and Create Release
+    if: ${{ github.event.pull_request.merged == true }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine release type from branch name
+        id: release_type
+        run: |
+          BRANCH="${{ github.head_ref }}"
+          echo "Merged branch: $BRANCH"
+
+          if [[ "$BRANCH" =~ ^feat(/|-|_) ]] || [[ "$BRANCH" == "feat" ]]; then
+            echo "type=minor" >> "$GITHUB_OUTPUT"
+            echo "label=feat" >> "$GITHUB_OUTPUT"
+            echo "  -> minor release (new feature)"
+          elif [[ "$BRANCH" =~ ^fix(/|-|_) ]] || [[ "$BRANCH" == "fix" ]]; then
+            echo "type=patch" >> "$GITHUB_OUTPUT"
+            echo "label=fix" >> "$GITHUB_OUTPUT"
+            echo "  -> patch release (bug fix)"
+          elif [[ "$BRANCH" =~ ^chore(/|-|_) ]] || [[ "$BRANCH" == "chore" ]]; then
+            echo "type=patch" >> "$GITHUB_OUTPUT"
+            echo "label=chore" >> "$GITHUB_OUTPUT"
+            echo "  -> patch release (chore / maintenance)"
+          elif [[ "$BRANCH" =~ ^bump(/|-|_) ]] || [[ "$BRANCH" == "bump" ]]; then
+            echo "type=patch" >> "$GITHUB_OUTPUT"
+            echo "label=bump" >> "$GITHUB_OUTPUT"
+            echo "  -> patch release (version bump)"
+          else
+            echo "type=none" >> "$GITHUB_OUTPUT"
+            echo "label=none" >> "$GITHUB_OUTPUT"
+            echo "  -> branch prefix is not feat/fix/chore/bump, skipping release"
+          fi
+
+      - name: Get latest semver tag
+        if: steps.release_type.outputs.type != 'none'
+        id: latest_tag
+        run: |
+          # Find the most recent tag matching vX.Y.Z (or default to v0.0.0)
+          LATEST=$(git tag --sort=-v:refname | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
+          LATEST="${LATEST:-v0.0.0}"
+          echo "Latest tag: $LATEST"
+          echo "tag=$LATEST" >> "$GITHUB_OUTPUT"
+
+      - name: Calculate next version
+        if: steps.release_type.outputs.type != 'none'
+        id: next_version
+        run: |
+          LATEST="${{ steps.latest_tag.outputs.tag }}"
+          LATEST="${LATEST#v}"          # strip leading 'v'
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$LATEST"
+          TYPE="${{ steps.release_type.outputs.type }}"
+
+          case "$TYPE" in
+            major)
+              MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor)
+              MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch)
+              PATCH=$((PATCH + 1)) ;;
+          esac
+
+          NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "Next version: $NEW_VERSION"
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        if: steps.release_type.outputs.type != 'none'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.next_version.outputs.version }}"
+          BRANCH="${{ github.head_ref }}"
+          LABEL="${{ steps.release_type.outputs.label }}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          PR_TITLE="${{ github.event.pull_request.title }}"
+
+          NOTES="## What's Changed
+
+          - **Branch:** \`${BRANCH}\`
+          - **Type:** \`${LABEL}\` → ${{ steps.release_type.outputs.type }} version bump
+          - **PR:** [#${PR_NUMBER}](https://github.com/${{ github.repository }}/pull/${PR_NUMBER}) ${PR_TITLE}
+
+          **Full Changelog:** https://github.com/${{ github.repository }}/compare/${{ steps.latest_tag.outputs.tag }}...${VERSION}"
+
+          gh release create "$VERSION" \
+            --title "Release ${VERSION}" \
+            --notes "$NOTES" \
+            --target main
