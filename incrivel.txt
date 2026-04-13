@@ -1,2 +1,3 @@
 amazing txt file feat
 amazing new line
+this branch name should not be allowed
