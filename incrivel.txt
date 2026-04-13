@@ -2,3 +2,4 @@ amazing txt file feat
 amazing new line
 this branch name should not be allowed
 and this should be not allowed as well
+nope
