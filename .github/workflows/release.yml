@@ -15,92 +15,76 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Determine release type, calculate version, and create release
+        uses: actions/github-script@v7
         with:
-          fetch-depth: 0
+          script: |
+            const branch = context.payload.pull_request.head.ref;
+            console.log(`Merged branch: ${branch}`);
 
-      - name: Determine release type from branch name
-        id: release_type
-        run: |
-          BRANCH="${{ github.head_ref }}"
-          echo "Merged branch: $BRANCH"
+            // Determine release type from branch name
+            let type, label;
+            if (/^feat(\/|-|_)/.test(branch) || branch === 'feat') {
+              type = 'minor'; label = 'feat';
+              console.log('  -> minor release (new feature)');
+            } else if (/^fix(\/|-|_)/.test(branch) || branch === 'fix') {
+              type = 'patch'; label = 'fix';
+              console.log('  -> patch release (bug fix)');
+            } else if (/^chore(\/|-|_)/.test(branch) || branch === 'chore') {
+              type = 'patch'; label = 'chore';
+              console.log('  -> patch release (chore / maintenance)');
+            } else if (/^bump(\/|-|_)/.test(branch) || branch === 'bump') {
+              type = 'patch'; label = 'bump';
+              console.log('  -> patch release (version bump)');
+            } else {
+              console.log('  -> branch prefix is not feat/fix/chore/bump, skipping release');
+              return;
+            }
 
-          if [[ "$BRANCH" =~ ^feat(/|-|_) ]] || [[ "$BRANCH" == "feat" ]]; then
-            echo "type=minor" >> "$GITHUB_OUTPUT"
-            echo "label=feat" >> "$GITHUB_OUTPUT"
-            echo "  -> minor release (new feature)"
-          elif [[ "$BRANCH" =~ ^fix(/|-|_) ]] || [[ "$BRANCH" == "fix" ]]; then
-            echo "type=patch" >> "$GITHUB_OUTPUT"
-            echo "label=fix" >> "$GITHUB_OUTPUT"
-            echo "  -> patch release (bug fix)"
-          elif [[ "$BRANCH" =~ ^chore(/|-|_) ]] || [[ "$BRANCH" == "chore" ]]; then
-            echo "type=patch" >> "$GITHUB_OUTPUT"
-            echo "label=chore" >> "$GITHUB_OUTPUT"
-            echo "  -> patch release (chore / maintenance)"
-          elif [[ "$BRANCH" =~ ^bump(/|-|_) ]] || [[ "$BRANCH" == "bump" ]]; then
-            echo "type=patch" >> "$GITHUB_OUTPUT"
-            echo "label=bump" >> "$GITHUB_OUTPUT"
-            echo "  -> patch release (version bump)"
-          else
-            echo "type=none" >> "$GITHUB_OUTPUT"
-            echo "label=none" >> "$GITHUB_OUTPUT"
-            echo "  -> branch prefix is not feat/fix/chore/bump, skipping release"
-          fi
+            // Get latest semver tag via GitHub API
+            const tags = await github.paginate(github.rest.repos.listTags, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100,
+            });
+            const semverTags = tags
+              .map(t => t.name)
+              .filter(t => /^v?\d+\.\d+\.\d+$/.test(t))
+              .sort((a, b) => {
+                const parse = v => v.replace(/^v/, '').split('.').map(Number);
+                const [aMaj, aMin, aPat] = parse(a);
+                const [bMaj, bMin, bPat] = parse(b);
+                return bMaj - aMaj || bMin - aMin || bPat - aPat;
+              });
+            const latestTag = semverTags[0] || 'v0.0.0';
+            console.log(`Latest tag: ${latestTag}`);
 
-      - name: Get latest semver tag
-        if: steps.release_type.outputs.type != 'none'
-        id: latest_tag
-        run: |
-          # Find the most recent tag matching vX.Y.Z (or default to v0.0.0)
-          LATEST=$(git tag --sort=-v:refname | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
-          LATEST="${LATEST:-v0.0.0}"
-          echo "Latest tag: $LATEST"
-          echo "tag=$LATEST" >> "$GITHUB_OUTPUT"
+            // Calculate next version
+            let [major, minor, patch] = latestTag.replace(/^v/, '').split('.').map(Number);
+            if (type === 'major') { major++; minor = 0; patch = 0; }
+            else if (type === 'minor') { minor++; patch = 0; }
+            else if (type === 'patch') { patch++; }
+            const newVersion = `v${major}.${minor}.${patch}`;
+            console.log(`Next version: ${newVersion}`);
 
-      - name: Calculate next version
-        if: steps.release_type.outputs.type != 'none'
-        id: next_version
-        run: |
-          LATEST="${{ steps.latest_tag.outputs.tag }}"
-          LATEST="${LATEST#v}"          # strip leading 'v'
+            // Create GitHub Release
+            const pr = context.payload.pull_request;
+            const notes = [
+              '## What\'s Changed',
+              '',
+              `- **Branch:** \`${branch}\``,
+              `- **Type:** \`${label}\` → ${type} version bump`,
+              `- **PR:** [#${pr.number}](https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${pr.number}) ${pr.title}`,
+              '',
+              `**Full Changelog:** https://github.com/${context.repo.owner}/${context.repo.repo}/compare/${latestTag}...${newVersion}`,
+            ].join('\n');
 
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$LATEST"
-          TYPE="${{ steps.release_type.outputs.type }}"
-
-          case "$TYPE" in
-            major)
-              MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-            minor)
-              MINOR=$((MINOR + 1)); PATCH=0 ;;
-            patch)
-              PATCH=$((PATCH + 1)) ;;
-          esac
-
-          NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
-          echo "Next version: $NEW_VERSION"
-          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Create GitHub Release
-        if: steps.release_type.outputs.type != 'none'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          VERSION="${{ steps.next_version.outputs.version }}"
-          BRANCH="${{ github.head_ref }}"
-          LABEL="${{ steps.release_type.outputs.label }}"
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-          PR_TITLE="${{ github.event.pull_request.title }}"
-
-          NOTES="## What's Changed
-
-          - **Branch:** \`${BRANCH}\`
-          - **Type:** \`${LABEL}\` → ${{ steps.release_type.outputs.type }} version bump
-          - **PR:** [#${PR_NUMBER}](https://github.com/${{ github.repository }}/pull/${PR_NUMBER}) ${PR_TITLE}
-
-          **Full Changelog:** https://github.com/${{ github.repository }}/compare/${{ steps.latest_tag.outputs.tag }}...${VERSION}"
-
-          gh release create "$VERSION" \
-            --title "Release ${VERSION}" \
-            --notes "$NOTES" \
-            --target main
+            await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: newVersion,
+              name: `Release ${newVersion}`,
+              body: notes,
+              target_commitish: 'main',
+            });
+            console.log(`Release ${newVersion} created successfully.`);
