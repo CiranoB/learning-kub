@@ -11,17 +11,16 @@ jobs:
 
     steps:
       - name: Validate branch name against conventional commit prefixes
-        run: |
-          BRANCH="${{ github.head_ref }}"
-          echo "Branch name: $BRANCH"
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const branch = context.payload.pull_request.head.ref;
+            console.log(`Branch name: ${branch}`);
 
-          ALLOWED_PATTERN='^(feat|fix|chore|bump)(/|-|_).+'
+            const allowedPattern = /^(feat|fix|chore|bump)(\/|-|_).+/;
 
-          if [[ "$BRANCH" =~ $ALLOWED_PATTERN ]]; then
-            echo "Branch '$BRANCH' is valid."
-          else
-            echo "::error::Branch name '$BRANCH' does not follow the required naming convention."
-            echo "::error::Branch names must start with one of: feat/, fix/, chore/, bump/"
-            echo "::error::Examples: feat/my-feature  fix/login-bug  chore/update-deps  bump/v2"
-            exit 1
-          fi
+            if (allowedPattern.test(branch)) {
+              console.log(`Branch '${branch}' is valid.`);
+            } else {
+              core.setFailed(`Branch name '${branch}' does not follow the required naming convention.\nBranch names must start with one of: feat/, fix/, chore/, bump/\nExamples: feat/my-feature  fix/login-bug  chore/update-deps  bump/v2`);
+            }
